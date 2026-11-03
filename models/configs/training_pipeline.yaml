@@ -1,6 +1,6 @@
 data:
-  train_path: /mnt/c/Users/achra/OneDrive/Bureau/ai-realtime-system/models/data/public/train.csv
-  test_path: /mnt/c/Users/achra/OneDrive/Bureau/ai-realtime-system/models/data/public/test.csv
+  train_path: models/data/public/train.csv
+  test_path: models/data/public/test.csv
   subsample_fraction: 0.1
   target_col: isFraud
 
