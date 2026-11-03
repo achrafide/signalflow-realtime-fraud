@@ -1,0 +1,16 @@
+{
+  "model_type": "XGBoostClassifier",
+  "metrics": {
+    "roc_auc": 0.7317956463353888,
+    "pr_auc": 0.11806511587225554,
+    "threshold_used": 0.5,
+    "true_negatives": 9180,
+    "false_positives": 2209,
+    "false_negatives": 203,
+    "true_positives": 219,
+    "precision_at_target_recall": 0.045927000241721055
+  },
+  "feature_config": "/mnt/c/Users/achra/OneDrive/Bureau/ai-realtime-system/models/configs/feature_schema.yaml",
+  "timestamp": "2026-11-03T12:21:09.128918",
+  "version": "v1.0-baseline"
+}

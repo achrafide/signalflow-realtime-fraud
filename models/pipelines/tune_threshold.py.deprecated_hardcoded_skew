@@ -1,0 +1,166 @@
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, from_json, current_timestamp, lit
+from pyspark.sql.types import StructType, StructField, StringType, DoubleType, TimestampType
+import joblib
+import yaml
+import os
+import json
+import redis
+from datetime import datetime
+
+# ──────────────────────────────────────────────────────────────
+# 1. LOAD CONFIG + MODEL (Hot-reload capable)
+# ──────────────────────────────────────────────────────────────
+def load_config(path: str = "/opt/config/thresholds.yaml") -> dict:
+    with open(path) as f:
+        return yaml.safe_load(f)
+
+def load_model(path: str = "/opt/models/xgboost_fraud_baseline.pkl"):
+    return joblib.load(path)
+
+# Load once at startup (broadcast to workers in production)
+CONFIG = load_config()
+MODEL = load_model()
+REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
+
+# ──────────────────────────────────────────────────────────────
+# 2. SPARK SESSION
+# ──────────────────────────────────────────────────────────────
+spark = SparkSession.builder \
+    .appName("SignalFlow-FraudDetector") \
+    .master("spark://spark-master:7077") \
+    .config("spark.sql.streaming.forceDeleteTempCheckpointFiles", "true") \
+    .config("spark.sql.shuffle.partitions", "2") \
+    .getOrCreate()
+
+spark.sparkContext.setLogLevel("WARN")
+
+# ──────────────────────────────────────────────────────────────
+# 3. FEATURE ENGINEERING (Match training pipeline exactly)
+# ──────────────────────────────────────────────────────────────
+def engineer_features_batch(df):
+    """Batch feature engineering - MUST match training features.py"""
+    # Time features
+    df = df.withColumn("hour_of_day", (col("TransactionDT") % 86400) / 3600)
+    df = df.withColumn("day_of_week", (col("TransactionDT") / 86400) % 7)
+    
+    # Amount transform
+    df = df.withColumn("transaction_amt_log", lit(1).cast("double"))  # Placeholder: implement log1p
+    
+    # Velocity proxies (simplified for MVP)
+    df = df.withColumn("user_freq_24h", lit(1).cast("double"))
+    df = df.withColumn("merchant_freq_24h", lit(1).cast("double"))
+    
+    # Missing indicators
+    for col_name in ["card2", "dist1"]:
+        df = df.withColumn(f"is_missing_{col_name}", col(col_name).isNull().cast("int"))
+    
+    # Categorical encoding (simplified)
+    df = df.withColumn("card4_encoded", lit(0).cast("int"))
+    df = df.withColumn("P_emaildomain_encoded", lit(0).cast("int"))
+    
+    # Select final feature columns (must match training order)
+    feature_cols = [
+        "transaction_amt_log", "hour_of_day", "day_of_week",
+        "user_freq_24h", "merchant_freq_24h",
+        "is_missing_card2", "is_missing_dist1",
+        "card4_encoded", "P_emaildomain_encoded"
+    ]
+    return df.select([col(c).cast("double") for c in feature_cols])
+
+# ──────────────────────────────────────────────────────────────
+# 4. KAFKA SOURCE
+# ──────────────────────────────────────────────────────────────
+EVENT_SCHEMA = StructType([
+    StructField("transaction_id", StringType(), True),
+    StructField("user_id", StringType(), True),
+    StructField("amount", DoubleType(), True),
+    StructField("currency", StringType(), True),
+    StructField("merchant_id", StringType(), True),
+    StructField("timestamp", StringType(), True),
+    StructField("hour_of_day", DoubleType(), True),
+    StructField("card1", DoubleType(), True),
+    StructField("card2", DoubleType(), True),
+    StructField("card4", StringType(), True),
+    StructField("dist1", DoubleType(), True),
+    StructField("P_emaildomain", StringType(), True),
+])
+
+raw_df = spark.readStream \
+    .format("kafka") \
+    .option("kafka.bootstrap.servers", "kafka:9092") \
+    .option("subscribe", "raw_transactions") \
+    .option("startingOffsets", "latest") \
+    .load()
+
+# Parse JSON
+parsed_df = raw_df.select(
+    col("key").cast("string").alias("event_key"),
+    from_json(col("value").cast("string"), EVENT_SCHEMA).alias("event"),
+    current_timestamp().alias("spark_ingested_at")
+).select("event.*", "spark_ingested_at")
+
+# ──────────────────────────────────────────────────────────────
+# 5. SCORING + ALERTING LOGIC
+# ──────────────────────────────────────────────────────────────
+def score_and_alert(batch_df, batch_id):
+    """Apply model + threshold + write alerts to Redis"""
+    if batch_df.isEmpty():
+        print(f"[Batch {batch_id}] ⏸️ No data", flush=True)
+        return
+    
+    # Convert to Pandas for model inference (small batches)
+    pandas_df = batch_df.toPandas()
+    
+    # Engineer features (must match training)
+    features = engineer_features_batch(batch_df).toPandas()
+    
+    # Score with XGBoost
+    scores = MODEL.predict_proba(features)[:, 1]
+    threshold = CONFIG['alerting']['risk_threshold']
+    
+    # Alert logic
+    alerts = []
+    for idx, row in pandas_df.iterrows():
+        score = scores[idx]
+        if score >= threshold:
+            alert = {
+                "incident_id": f"alert_{row['transaction_id']}_{int(datetime.now().timestamp())}",
+                "transaction_id": row['transaction_id'],
+                "user_id": row['user_id'],
+                "amount": row['amount'],
+                "risk_score": float(score),
+                "threshold_used": threshold,
+                "evidence": {
+                    "hour_of_day": row.get('hour_of_day'),
+                    "merchant_id": row.get('merchant_id'),
+                    "velocity_24h": 1  # Placeholder
+                },
+                "recommended_action": "review_transaction",
+                "timestamp": datetime.now().isoformat()
+            }
+            alerts.append(alert)
+    
+    # Write alerts to Redis (TTL = 5 minutes)
+    if alerts:
+        r = redis.from_url(REDIS_URL, decode_responses=True)
+        for alert in alerts:
+            key = f"alert:{alert['incident_id']}"
+            r.setex(key, 300, json.dumps(alert))  # 300s TTL
+            # Also index by transaction_id for fast lookup
+            r.setex(f"tx:{alert['transaction_id']}", 300, alert['incident_id'])
+        print(f"[Batch {batch_id}] ✅ Alerted {len(alerts)} transactions", flush=True)
+    else:
+        print(f"[Batch {batch_id}] ✅ Scored {len(pandas_df)} transactions, no alerts", flush=True)
+
+# ──────────────────────────────────────────────────────────────
+# 6. START STREAMING QUERY
+# ──────────────────────────────────────────────────────────────
+query = parsed_df.writeStream \
+    .foreachBatch(score_and_alert) \
+    .outputMode("append") \
+    .option("checkpointLocation", "/tmp/spark-checkpoints/fraud-detector") \
+    .start()
+
+print(f"🔌 SignalFlow Fraud Detector active | Threshold: {CONFIG['alerting']['risk_threshold']}")
+query.awaitTermination()

@@ -1,0 +1,21 @@
+alerting:
+  cooldown_minutes: 15
+  evidence_fields:
+  - transaction_id
+  - user_id
+  - amount
+  - velocity_1h_count
+  - hour_of_day
+  min_amount_trigger: 100.0
+  risk_threshold: 0.65
+  ttl_seconds: 300
+  verdict_labels:
+    high: "review_transaction"
+    med: "monitor"
+    low: "pass"
+
+metadata:
+  expected_fp_rate: 0.046887347440512775
+  expected_recall: 0.7074442863916548
+  rationale: Max recall (70.74%) within FP limit (5.0%)
+  tuned_at: '2026-04-18T19:50:33.163974'

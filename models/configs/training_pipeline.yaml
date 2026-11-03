@@ -1,0 +1,16 @@
+data:
+  train_path: /mnt/c/Users/achra/OneDrive/Bureau/ai-realtime-system/models/data/public/train.csv
+  test_path: /mnt/c/Users/achra/OneDrive/Bureau/ai-realtime-system/models/data/public/test.csv
+  subsample_fraction: 0.1
+  target_col: isFraud
+
+training:
+  target_col: isFraud
+  test_size: 0.2
+  random_state: 42
+
+evaluation:
+  threshold: 0.5
+  precision_recall_target: 0.90
+  min_roc_auc: 0.92
+  max_fp_rate: 0.05

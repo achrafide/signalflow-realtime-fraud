@@ -1,0 +1,125 @@
+
+services:
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: kafka
+    ports: ["9092:9092"]
+    environment:
+      # 🔑 CRITICAL: Must be named EXACTLY "CLUSTER_ID" (no KAFKA_ prefix)
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+      
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    networks: [ai-net]
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+      
+  spark-master:
+    build: ./streaming
+    container_name: spark-master
+    command: >
+      /bin/bash -c "
+        mkdir -p /home/spark/.ivy2/cache &&
+        chown -R spark:spark /home/spark/.ivy2 &&
+        /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+      "
+    ports: ["8080:8080", "7077:7077", "4040:4040"]
+    environment:
+      - SPARK_HOME=/opt/spark
+      - SPARK_MASTER_HOST=spark-master
+      - SPARK_NO_DAEMONIZE=true
+    volumes:
+      - ./streaming:/opt/spark-app:ro
+      - ./models/artifacts:/opt/models:ro
+      - ./models/configs:/opt/config:ro
+      - spark-ivy:/home/spark/.ivy2  # ← Named volume for cache persistence
+    networks: [ai-net]
+    depends_on:
+      kafka: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  spark-worker:
+    build: ./streaming
+    container_name: spark-worker
+    command: >
+      /bin/bash -c "
+        mkdir -p /home/spark/.ivy2/cache &&
+        chown -R spark:spark /home/spark/.ivy2 &&
+        /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+      "
+    environment:
+      - SPARK_HOME=/opt/spark
+      - SPARK_WORKER_CORES=2
+      - SPARK_WORKER_MEMORY=2g
+      - SPARK_NO_DAEMONIZE=true
+      - PYSPARK_PYTHON=python3
+    volumes:
+      - ./models/artifacts:/opt/models:ro
+      - ./models/configs:/opt/config:ro
+      - ./streaming:/opt/spark-app:ro
+      - ./api:/app:ro
+    networks: [ai-net]
+    depends_on: [spark-master]
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+  api:
+    build: ./api
+    container_name: api
+    ports: ["8000:8000"]
+    environment:
+      - MODEL_PATH=/app/models/xgboost_model.pkl
+      - REDIS_URL=redis://redis:6379/
+    volumes:
+      - ./models/artifacts:/opt/models:ro
+      - ./models/configs:/opt/config:ro
+      - ./streaming:/opt/spark-app:ro
+      - ./api:/app:ro
+    networks: [ai-net]
+    depends_on: [spark-worker]
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports: ["6379:6379"]
+    networks: [ai-net]
+
+  data-simulator:
+    build: ./data_simulator
+    container_name: data-simulator
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - KAFKA_TOPIC=raw-events
+    networks: [ai-net]
+    depends_on:
+      kafka: { condition: service_healthy }
+
+networks:
+  ai-net: { driver: bridge }
+volumes:
+  kafka_data:
+  redis_data:
+  spark-ivy:

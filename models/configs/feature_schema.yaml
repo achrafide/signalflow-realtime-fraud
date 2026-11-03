@@ -1,0 +1,26 @@
+feature_columns:
+  - transaction_amt_log
+  - hour_of_day
+  - day_of_week
+  - is_missing_card2
+  - is_missing_dist1
+  - card4_encoded
+  - P_emaildomain_encoded
+
+missing_indicators:
+  - card2
+  - dist1
+
+imputation:
+  card2: median
+  dist1: 0
+  default: 0
+
+derivations:                
+  transaction_amt_log:    { src: amount,      op: log1p }          
+  hour_of_day:            { src: hour_of_day, op: passthrough }    
+  day_of_week:            { src: timestamp,   op: to_dayofweek }   
+  is_missing_card2:       { src: card2,       op: is_null }
+  is_missing_dist1:       { src: dist1,       op: is_null }
+  card4_encoded:          { op: placeholder, value: 0.0, note: "phase-2 categorical" }
+  P_emaildomain_encoded:  { op: placeholder, value: 0.0, note: "phase-2 categorical" }

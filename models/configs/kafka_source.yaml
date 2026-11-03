@@ -1,0 +1,18 @@
+source:
+  topic: raw_transactions          
+  bootstrap: kafka:9092
+  starting_offsets: latest          
+  key_field: transaction_id         
+schema:                             
+  - {name: transaction_id, type: string}
+  - {name: user_id,       type: string}
+  - {name: amount,        type: double}
+  - {name: currency,      type: string}
+  - {name: merchant_id,   type: string}
+  - {name: timestamp,     type: string}
+  - {name: hour_of_day,   type: double}
+  - {name: card1,         type: double}
+  - {name: card2,         type: double}
+  - {name: card4,         type: string}
+  - {name: dist1,         type: double}
+  - {name: P_emaildomain, type: string}

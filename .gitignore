@@ -1,0 +1,27 @@
+# venv + python cache (huge, platform-specific — never commit)
+models/fraud_detection_venv/
+.venv/
+__pycache__/
+*.py[cod]
+
+# mlflow run logs (machine-specific)
+mlruns/
+
+# training csv (download from Kaggle; too big for git)
+models/data/
+
+# runtime / logs
+/tmp/
+spark-checkpoints/
+*.log
+
+# os / editor noise
+.DS_Store
+.vscode/
+.idea/
+
+# caught by the status check
+venv/
+mlflow.db
+jars/
+*.jar
